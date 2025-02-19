@@ -3,7 +3,8 @@ from typing import Callable
 import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset
-
+import os
+from datasets import load_from_disk
 from .utils import zero_pad_sequences
 
 
@@ -74,12 +75,18 @@ class SFTDataset(Dataset):
                 self.tokenizer.chat_template = tokenizer_chat_template
 
         # Parallel loading datasets
-        processed_dataset = dataset.map(
-            self.process_data, 
-            remove_columns=dataset.column_names,
-            num_proc=num_processors,
-        )
-        processed_dataset = processed_dataset.filter(lambda x: x["prompt"] is not None)
+        if os.environ['RANK'] == '0':
+            processed_dataset = dataset.map(
+                self.process_data, 
+                remove_columns=dataset.column_names,
+                num_proc=64,
+                load_from_cache_file=False,
+            )
+            processed_dataset = processed_dataset.filter(lambda x: x["prompt"] is not None)
+            processed_dataset.save_to_disk(f"/hf_cache/cache_{os.environ['SLURM_JOB_ID']}")
+        torch.distributed.barrier()  # Wait for rank 0
+        if os.environ['RANK'] != '0':
+            processed_dataset = load_from_disk(f"/hf_cache/cache_{os.environ['SLURM_JOB_ID']}")
 
         # Store the processed data in class attributes
         self.prompts = processed_dataset["prompt"]
